@@ -154,6 +154,7 @@ type StorageConfigType = {
   requestAllowXForwardedPrefix?: boolean
   storagePublicUrl?: string
   logLevel: string
+  logStdoutSync: boolean
   logflareEnabled?: boolean
   logflareApiKey?: string
   logflareSourceToken?: string
@@ -669,6 +670,7 @@ export function getConfig(options?: { reload?: boolean }): StorageConfigType {
 
     // Monitoring
     logLevel: getOptionalConfigFromEnv('LOG_LEVEL') || 'info',
+    logStdoutSync: getOptionalConfigFromEnv('LOG_STDOUT_SYNC') === 'true',
     logflareEnabled: getOptionalConfigFromEnv('LOGFLARE_ENABLED') === 'true',
     logflareApiKey: getOptionalConfigFromEnv('LOGFLARE_API_KEY'),
     logflareSourceToken: getOptionalConfigFromEnv('LOGFLARE_SOURCE_TOKEN'),

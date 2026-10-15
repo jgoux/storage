@@ -21,6 +21,7 @@ function setupLoggerMocks(configOverrides: Record<string, unknown> = {}) {
   const pinoMock = Object.assign(
     vi.fn(() => loggerStub),
     {
+      destination: vi.fn((options: unknown) => ({ destination: options })),
       stdTimeFunctions: {
         epochTime: vi.fn(),
         isoTime: vi.fn(),
@@ -46,6 +47,52 @@ function setupLoggerMocks(configOverrides: Record<string, unknown> = {}) {
 
   return { pinoMock }
 }
+
+describe('logger destination', () => {
+  afterEach(() => {
+    for (const mockedModule of mockedLoggerModules) {
+      vi.doUnmock(mockedModule)
+    }
+    vi.resetModules()
+  })
+
+  test('logs through a pino transport worker by default', async () => {
+    const { pinoMock } = setupLoggerMocks()
+    await import('./logger')
+
+    expect(pinoMock).toHaveBeenCalledTimes(1)
+    const [options, ...rest] = pinoMock.mock.calls[0] as unknown as unknown[]
+    expect(rest).toHaveLength(0)
+    expect(options).toHaveProperty('transport')
+    expect(pinoMock.destination).not.toHaveBeenCalled()
+  })
+
+  test('writes to stdout synchronously on the main thread with logStdoutSync', async () => {
+    const { pinoMock } = setupLoggerMocks({ logStdoutSync: true })
+    await import('./logger')
+
+    expect(pinoMock.destination).toHaveBeenCalledWith({ fd: 1, sync: true })
+    expect(pinoMock).toHaveBeenCalledTimes(1)
+    const [options, stream] = pinoMock.mock.calls[0] as unknown as [object, unknown]
+    expect(options).not.toHaveProperty('transport')
+    expect(stream).toEqual({ destination: { fd: 1, sync: true } })
+  })
+
+  test('keeps the transport worker when logflare is enabled', async () => {
+    const { pinoMock } = setupLoggerMocks({
+      logStdoutSync: true,
+      logflareEnabled: true,
+      logflareApiKey: 'key',
+      logflareSourceToken: 'token',
+    })
+    await import('./logger')
+
+    expect(pinoMock.destination).not.toHaveBeenCalled()
+    const [options, ...rest] = pinoMock.mock.calls[0] as unknown as unknown[]
+    expect(rest).toHaveLength(0)
+    expect(options).toHaveProperty('transport')
+  })
+})
 
 describe('logger serializers', () => {
   async function createRequestUrlRedactor() {

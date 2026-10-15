@@ -9,8 +9,11 @@
 //   - ECS and EKS cluster discovery (CLUSTER_DISCOVERY): ignored with a warning.
 //   - ioredis: the image rate limiter only supports RATE_LIMITER_DRIVER=memory
 //     (redis is rejected when the render routes register).
+//   - pino transport worker threads: logs go to stdout synchronously
+//     (LOG_STDOUT_SYNC defaults to true, see ./minimal-defaults).
 //   - The multi-tenant admin app (and profiling routes that live behind it):
 //     MULTI_TENANT=true is rejected.
+import './minimal-defaults'
 import { logger } from '@internal/monitoring'
 import { getConfig } from '../config'
 import { close, startServer } from './main'

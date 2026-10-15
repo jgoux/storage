@@ -70,6 +70,7 @@ export const serializeReplyLogToJson = fastJson({
 
 const {
   logLevel,
+  logStdoutSync,
   logflareApiKey,
   logflareSourceToken,
   logflareEnabled,
@@ -78,8 +79,13 @@ const {
   version: appVersion,
 } = getConfig()
 
-export const baseLogger = pino({
-  transport: buildTransport(),
+// pino's transports run in a worker thread. With LOG_STDOUT_SYNC and nothing
+// else to ship the logs to, write to stdout synchronously from the main thread
+// instead, which is pino's own default. Any configured transport (Logflare)
+// keeps the worker.
+const syncStdout = logStdoutSync && !logflareEnabled
+
+const loggerOptions: pino.LoggerOptions = {
   serializers: {
     error(error) {
       return normalizeRawError(error, logLevel)
@@ -92,7 +98,11 @@ export const baseLogger = pino({
   },
   level: logLevel,
   timestamp: pino.stdTimeFunctions.epochTime,
-})
+}
+
+export const baseLogger = syncStdout
+  ? pino(loggerOptions, pino.destination({ fd: 1, sync: true }))
+  : pino({ ...loggerOptions, transport: buildTransport() })
 
 registerLogStringifiers(baseLogger)
 
