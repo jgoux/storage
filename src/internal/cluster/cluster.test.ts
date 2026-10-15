@@ -47,6 +47,14 @@ vi.mock('./eks', () => {
   }
 })
 
+// Entry points register the discovery implementations; the module registry is
+// reset between tests, so register them again for each fresh Cluster.
+async function importCluster() {
+  const { Cluster } = await import('./cluster')
+  await import('./register-discovery')
+  return { Cluster }
+}
+
 describe('Cluster', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -77,7 +85,7 @@ describe('Cluster', () => {
   }) => {
     vi.stubEnv('CLUSTER_DISCOVERY', discovery)
 
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const abortController = new AbortController()
 
     try {
@@ -94,7 +102,7 @@ describe('Cluster', () => {
   it('does not load a discovery implementation when CLUSTER_DISCOVERY is unset', async () => {
     vi.stubEnv('CLUSTER_DISCOVERY', undefined)
 
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
 
     await Cluster.init(new AbortController().signal)
 
@@ -106,7 +114,7 @@ describe('Cluster', () => {
   it('does not initialize discovery when the abort signal is already aborted', async () => {
     vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
 
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const abortController = new AbortController()
     abortController.abort()
 
@@ -126,7 +134,7 @@ describe('Cluster', () => {
   }) => {
     vi.stubEnv('CLUSTER_DISCOVERY', discovery)
 
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const abortController = new AbortController()
 
     const initialization = Cluster.init(abortController.signal)
@@ -144,7 +152,7 @@ describe('Cluster', () => {
   ])('does not publish or watch when initial discovery is aborted %s', async (timing) => {
     vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
 
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const abortController = new AbortController()
     getEcsClusterSize.mockImplementationOnce(() => {
       if (timing !== 'during discovery') {
@@ -164,7 +172,7 @@ describe('Cluster', () => {
 
   it('does not watch when aborted while logging the initial size', async () => {
     vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const abortController = new AbortController()
     getEcsClusterSize.mockResolvedValueOnce(2)
     vi.mocked(logger.info).mockImplementationOnce(() => abortController.abort())
@@ -175,7 +183,7 @@ describe('Cluster', () => {
 
   it('propagates an initial discovery failure when not shutting down', async () => {
     vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const error = new Error('discovery failed')
     getEcsClusterSize.mockRejectedValueOnce(error)
 
@@ -186,7 +194,7 @@ describe('Cluster', () => {
   it('allows a startup listing longer than 30 seconds with a larger configured deadline', async () => {
     vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
     config.clusterDiscoveryTimeoutMs = 45_000
-    const { Cluster } = await import('./cluster')
+    const { Cluster } = await importCluster()
     const shutdown = new AbortController()
     const discovery = Promise.withResolvers<number>()
     getEcsClusterSize.mockReturnValueOnce(discovery.promise)
@@ -208,7 +216,7 @@ describe('Cluster', () => {
       const getSize = discovery === 'ECS' ? getEcsClusterSize : getEksClusterSize
       getSize.mockResolvedValueOnce(initialSize)
 
-      const { Cluster } = await import('./cluster')
+      const { Cluster } = await importCluster()
       const abortController = new AbortController()
       await Cluster.init(abortController.signal)
       getSize.mockClear()
@@ -433,7 +441,7 @@ describe('Cluster', () => {
         { trigger: 'shutdown', elapsed: 1 },
       ])('cancels hung initial discovery on $trigger', async ({ trigger, elapsed }) => {
         vi.stubEnv('CLUSTER_DISCOVERY', 'ECS')
-        const { Cluster } = await import('./cluster')
+        const { Cluster } = await importCluster()
         const shutdown = new AbortController()
         let signal!: AbortSignal
         getEcsClusterSize.mockImplementationOnce((s) => {

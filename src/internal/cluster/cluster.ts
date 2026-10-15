@@ -12,6 +12,21 @@ interface ClusterDiscovery {
   getClusterSize(signal: AbortSignal): Promise<number>
 }
 
+type ClusterDiscoveryLoader = () => Promise<ClusterDiscovery>
+
+const discoveryLoaders = new Map<string, ClusterDiscoveryLoader>()
+
+/**
+ * Makes a CLUSTER_DISCOVERY implementation available to Cluster.init.
+ *
+ * Implementations are registered by the entry point (see ./register-discovery)
+ * rather than imported here, so an entry that does not register them does not
+ * pull their cloud SDKs into its module graph.
+ */
+export function registerClusterDiscovery(type: string, load: ClusterDiscoveryLoader) {
+  discoveryLoaders.set(type, load)
+}
+
 export class Cluster {
   static size: number = 0
   protected static watcher?: NodeJS.Timeout = undefined
@@ -32,22 +47,23 @@ export class Cluster {
     const discoveryType = process.env.CLUSTER_DISCOVERY
     const config = getConfig()
 
-    if (discoveryType === 'ECS') {
-      const { ClusterDiscoveryECS } = await import('./ecs')
+    if (discoveryType) {
+      const load = discoveryLoaders.get(discoveryType)
 
-      if (abortSignal.aborted) {
-        return
+      if (load) {
+        const discovery = await load()
+
+        if (abortSignal.aborted) {
+          return
+        }
+
+        cluster = discovery
+      } else if (discoveryType === 'ECS' || discoveryType === 'EKS') {
+        logger.warn(
+          { type: 'cluster', discoveryType },
+          `[Cluster] CLUSTER_DISCOVERY=${discoveryType} is not supported by this entry point, cluster discovery is disabled`
+        )
       }
-
-      cluster = new ClusterDiscoveryECS()
-    } else if (discoveryType === 'EKS') {
-      const { ClusterDiscoveryEKS } = await import('./eks')
-
-      if (abortSignal.aborted) {
-        return
-      }
-
-      cluster = new ClusterDiscoveryEKS()
     }
 
     if (cluster) {

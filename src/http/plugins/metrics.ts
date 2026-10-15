@@ -1,5 +1,5 @@
 import { recordHttpRequestMetrics } from '@internal/monitoring/metrics'
-import { handleMetricsRequest } from '@internal/monitoring/otel-metrics'
+import { handleMetricsRequest } from '@internal/monitoring/metrics-handler'
 import fastifyPlugin from 'fastify-plugin'
 import { getConfig } from '../../config'
 

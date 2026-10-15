@@ -1,3 +1,4 @@
+import '@internal/monitoring/otel-metrics'
 import '@storage/backend/register-xattr'
 
 import { AsyncAbortController } from '@internal/concurrency'

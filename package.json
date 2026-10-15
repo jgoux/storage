@@ -5,6 +5,7 @@
     "dev": "tsx watch src/start/server.ts | pino-pretty",
     "build": "tsc -noEmit && node ./build.js && resolve-tspaths",
     "start": "NODE_ENV=production node dist/start/server.js",
+    "start:minimal": "NODE_ENV=production node dist/start/server-minimal.js",
     "lint": "biome check . && prettier --check .",
     "lint:fix": "biome check --fix . && prettier --write .",
     "migration:run": "tsx src/scripts/migrate-call.ts",

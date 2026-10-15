@@ -4,6 +4,7 @@ import { normalizeRawError } from '@internal/errors'
 import * as k8s from '@kubernetes/client-node'
 import { vi } from 'vitest'
 import { Cluster } from './cluster'
+import './register-discovery'
 import { ClusterDiscoveryEKS } from './eks'
 
 const config = vi.hoisted(() => ({

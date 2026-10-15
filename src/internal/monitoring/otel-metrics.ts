@@ -18,6 +18,7 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { FastifyReply, FastifyRequest } from 'fastify'
 import { getConfig } from '../../config'
 import { HTTP_SIZE_METRICS_AGGREGATION_CARDINALITY_LIMIT } from './metric-limits'
+import { registerMetricsRequestHandler } from './metrics-handler'
 import { isOtelMetricsReaderEnabled } from './otel-metrics-config'
 import { resolveRuntimeIdentity } from './runtime-identity'
 
@@ -232,6 +233,8 @@ export async function handleMetricsRequest(
 
   return Promise.resolve()
 }
+
+registerMetricsRequestHandler(handleMetricsRequest)
 
 // =============================================================================
 // Initialize at import time

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { ECSClient } from '@aws-sdk/client-ecs'
 import { vi } from 'vitest'
 import { Cluster } from './cluster'
+import './register-discovery'
 
 const transport = vi.hoisted(() => ({ endpoint: '', clients: [] as ECSClient[], timeoutMs: 0 }))
 

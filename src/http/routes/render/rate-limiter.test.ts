@@ -57,4 +57,28 @@ describe('render rate limiter', () => {
       await app.close()
     }
   })
+
+  it('refuses the redis driver when no Redis client was registered', async () => {
+    vi.doMock('../../../config', () => ({
+      getConfig: () => ({
+        rateLimiterDriver: 'redis',
+        rateLimiterRedisUrl: 'redis://127.0.0.1:6379',
+        rateLimiterSkipOnError: false,
+        rateLimiterRedisConnectTimeout: 1,
+        rateLimiterRedisCommandTimeout: 1,
+        rateLimiterRenderPathMaxReqSec: 1,
+      }),
+    }))
+
+    const { rateLimiter } = await import('./rate-limiter')
+    const app = Fastify()
+
+    try {
+      await expect(app.register(rateLimiter)).rejects.toThrow(
+        'RATE_LIMITER_DRIVER=redis is not supported by this entry point'
+      )
+    } finally {
+      await app.close()
+    }
+  })
 })

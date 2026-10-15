@@ -18,6 +18,7 @@ const serverConfigState = vi.hoisted(() => ({ isMultitenant: false }))
 
 vi.mock('./tracing', () => ({}))
 vi.mock('@internal/monitoring/otel-metrics', () => ({}))
+vi.mock('@internal/cluster/register-discovery', () => ({}))
 vi.mock('@internal/monitoring', () => ({
   logger: { info: vi.fn() },
   logSchema: { info: vi.fn(), error: vi.fn() },

@@ -1,7 +1,7 @@
 import fastifySwagger from '@fastify/swagger'
 import fastifySwaggerUi from '@fastify/swagger-ui'
 import { lastLocalMigrationName } from '@internal/database/migrations'
-import { handleMetricsRequest } from '@internal/monitoring/otel-metrics'
+import { handleMetricsRequest } from '@internal/monitoring/metrics-handler'
 import fastify, { FastifyInstance, FastifyServerOptions } from 'fastify'
 import { getConfig } from './config'
 import { plugins, routes, setErrorHandler } from './http'
