@@ -1,5 +1,6 @@
 import './tracing'
 import '@internal/monitoring/otel-metrics'
+import '@storage/backend/register-xattr'
 
 import { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { Cluster } from '@internal/cluster/cluster'

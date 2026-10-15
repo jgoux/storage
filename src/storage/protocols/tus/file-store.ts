@@ -54,10 +54,12 @@ export class FileStore extends TusFileStore {
         throw error
       }
 
+      await this.fileAdapter.removeFileMetadata(filePath)
       await this.deleteConfigstoreEntryBestEffort(fileId)
       throw TUS_ERRORS.FILE_NOT_FOUND
     }
 
+    await this.fileAdapter.removeFileMetadata(filePath)
     await this.configstore.delete(fileId)
   }
 

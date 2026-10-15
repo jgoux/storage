@@ -1,3 +1,5 @@
+import '@storage/backend/register-xattr'
+
 import { AsyncAbortController } from '@internal/concurrency'
 import { listenForTenantUpdate, PubSub } from '@internal/database'
 import { logger, logSchema, setLogger } from '@internal/monitoring'

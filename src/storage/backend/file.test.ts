@@ -11,6 +11,7 @@ import { type Mock, vi } from 'vitest'
 import { getConfig } from '../../config'
 import { type BrowserCacheHeaders, withOptionalVersion } from './adapter'
 import { FileBackend } from './file'
+import './register-xattr'
 
 vi.mock('fs-xattr', () => ({
   setAttributeSync: vi.fn(() => undefined),
@@ -1162,5 +1163,181 @@ describe('FileBackend copy source preconditions', () => {
       ifNoneMatch: '',
       ifModifiedSince: new Date(sourceLastModified.getTime() + 60_000),
     })
+  })
+})
+
+describe('FileBackend metadata mode', () => {
+  const ctx = useFileBackend('storage-file-mode-')
+
+  it('rejects an unknown FILE_STORAGE_METADATA value when the config loads', () => {
+    vi.stubEnv('FILE_STORAGE_METADATA', 'foo')
+    expect(() => getConfig({ reload: true })).toThrow(/FILE_STORAGE_METADATA/)
+  })
+
+  it('fails before writing any byte when the metadata store cannot be resolved, and retries later', async () => {
+    const metadata = await import('./file-metadata')
+    const spy = vi
+      .spyOn(metadata, 'resolveFileMetadataStore')
+      .mockRejectedValueOnce(new Error('unusable'))
+
+    await expect(ctx.upload('bucket', 'a.txt', 'v1', 'hello')).rejects.toThrow('unusable')
+    await expect(fsp.readdir(ctx.tmpDir)).resolves.toEqual([])
+
+    await expect(ctx.upload('bucket', 'a.txt', 'v1', 'hello')).resolves.toMatchObject({
+      httpStatusCode: 200,
+    })
+    spy.mockRestore()
+  })
+})
+
+describe('FileBackend sidecar metadata', () => {
+  const ctx = useFileBackend('storage-file-sidecar-')
+
+  beforeEach(() => {
+    vi.stubEnv('FILE_STORAGE_METADATA', 'sidecar')
+    getConfig({ reload: true })
+    ctx.backend = new FileBackend()
+  })
+
+  it('stores metadata in a sidecar file and never touches xattrs', async () => {
+    await ctx.backend.uploadObject(
+      'bucket',
+      'a.txt',
+      'v1',
+      Readable.from('hello'),
+      'text/plain',
+      'max-age=60',
+      undefined,
+      undefined,
+      'gzip'
+    )
+
+    const head = await ctx.backend.headObject('bucket', 'a.txt', 'v1')
+    expect(head).toMatchObject({
+      mimetype: 'text/plain',
+      cacheControl: 'max-age=60',
+      contentEncoding: 'gzip',
+    })
+    expect(xattr.setAttributeSync).not.toHaveBeenCalled()
+    expect(xattr.getAttributeSync).not.toHaveBeenCalled()
+    await expect(
+      fsp.readFile(path.join(ctx.tmpDir, '~metadata', 'bucket', 'a.txt', 'v1.json'), 'utf-8')
+    ).resolves.toContain('"content-type":"text/plain"')
+  })
+
+  it('keeps a user object named like a sidecar apart from the metadata of its neighbour', async () => {
+    await ctx.backend.uploadObject(
+      'bucket',
+      'a',
+      null,
+      Readable.from('first'),
+      'text/plain',
+      'max-age=60'
+    )
+    await ctx.backend.uploadObject(
+      'bucket',
+      'a.supabase-metadata.json',
+      null,
+      Readable.from('{"content-type":"text/html"}'),
+      'application/json',
+      'no-cache'
+    )
+    await ctx.backend.uploadObject(
+      'bucket',
+      'a',
+      null,
+      Readable.from('second'),
+      'text/css',
+      'max-age=60'
+    )
+
+    await expect(
+      text(fs.createReadStream(ctx.objectPath('bucket', 'a.supabase-metadata.json', '')))
+    ).resolves.toBe('{"content-type":"text/html"}')
+    await expect(ctx.backend.headObject('bucket', 'a', null)).resolves.toMatchObject({
+      mimetype: 'text/css',
+    })
+    await expect(
+      ctx.backend.headObject('bucket', 'a.supabase-metadata.json', null)
+    ).resolves.toMatchObject({ mimetype: 'application/json' })
+  })
+
+  it('treats a corrupt sidecar like a missing one', async () => {
+    await ctx.upload('bucket', 'a.txt', 'v1', 'hello', 'text/plain')
+    await fsp.writeFile(path.join(ctx.tmpDir, '~metadata', 'bucket', 'a.txt', 'v1.json'), '{nope')
+
+    await expect(ctx.backend.headObject('bucket', 'a.txt', 'v1')).resolves.toMatchObject({
+      mimetype: 'application/octet-stream',
+      cacheControl: 'no-cache',
+    })
+  })
+
+  it('removes the part sidecars with an aborted multipart upload', async () => {
+    const uploadId = (await ctx.backend.createMultiPartUpload(
+      'bucket',
+      'key',
+      'v1',
+      'text/plain',
+      'no-cache'
+    )) as string
+    await ctx.backend.uploadPart('bucket', 'key', 'v1', uploadId, 1, Readable.from('hello'))
+    await ctx.backend.abortMultipartUpload('bucket', 'key', uploadId, 'v1')
+
+    await expect(fsp.readdir(ctx.tmpDir)).resolves.toEqual([])
+  })
+
+  it('copies metadata with the object, replaces it on request and removes it on delete', async () => {
+    await ctx.upload('bucket', 'a.txt', 'v1', 'hello', 'text/plain', 'max-age=60')
+
+    await ctx.backend.copyObject('bucket', 'a.txt', 'v1', 'b.txt', 'v1')
+    await expect(ctx.backend.headObject('bucket', 'b.txt', 'v1')).resolves.toMatchObject({
+      mimetype: 'text/plain',
+      cacheControl: 'max-age=60',
+    })
+
+    await ctx.backend.copyObject(
+      'bucket',
+      'a.txt',
+      'v1',
+      'b.txt',
+      'v1',
+      { contentType: 'text/html' },
+      undefined,
+      { copyMetadata: false }
+    )
+    await expect(ctx.backend.headObject('bucket', 'b.txt', 'v1')).resolves.toMatchObject({
+      mimetype: 'text/html',
+      cacheControl: 'no-cache',
+    })
+
+    await ctx.backend.deleteObject('bucket', 'a.txt', 'v1')
+    await ctx.backend.deleteObjects('bucket', [withOptionalVersion('b.txt', 'v1')])
+    await expect(fsp.readdir(ctx.tmpDir)).resolves.toEqual([])
+  })
+
+  it('keeps the part etag in a sidecar for multipart completion', async () => {
+    const uploadId = (await ctx.backend.createMultiPartUpload(
+      'bucket',
+      'key',
+      'v1',
+      'text/plain',
+      'no-cache'
+    )) as string
+    const { ETag } = await ctx.backend.uploadPart(
+      'bucket',
+      'key',
+      'v1',
+      uploadId,
+      1,
+      Readable.from('hello')
+    )
+
+    await ctx.backend.completeMultipartUpload('bucket', 'key', uploadId, 'v1', [
+      { PartNumber: 1, ETag },
+    ])
+
+    await expect(text(fs.createReadStream(ctx.objectPath('bucket', 'key', 'v1')))).resolves.toBe(
+      'hello'
+    )
   })
 })

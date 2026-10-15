@@ -36,10 +36,14 @@ describe('TUS FileStore traversal protection', () => {
 
     ;(
       store as unknown as {
-        fileAdapter: { setFileMetadata: (filePath: string, metadata: unknown) => Promise<void> }
+        fileAdapter: {
+          setFileMetadata: (filePath: string, metadata: unknown) => Promise<void>
+          removeFileMetadata: (filePath: string) => Promise<void>
+        }
       }
     ).fileAdapter = {
       setFileMetadata: vi.fn().mockResolvedValue(undefined),
+      removeFileMetadata: vi.fn().mockResolvedValue(undefined),
     }
 
     return store
@@ -398,5 +402,63 @@ describe('TUS FileStore traversal protection', () => {
 
     expect(maxConcurrentRemovals).toBeGreaterThan(0)
     expect(maxConcurrentRemovals).toBeLessThan(uploadIds.length)
+  })
+})
+
+describe('TUS FileStore sidecar metadata', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'storage-tus-sidecar-'))
+    vi.stubEnv('STORAGE_FILE_BACKEND_PATH', tmpDir)
+    vi.stubEnv('FILE_STORAGE_BACKEND_PATH', tmpDir)
+    vi.stubEnv('FILE_STORAGE_METADATA', 'sidecar')
+    getConfig({ reload: true })
+  })
+
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    getConfig({ reload: true })
+    await removePath(tmpDir)
+  })
+
+  it('creates, writes and removes an upload with its metadata', async () => {
+    const store = new FileStore({
+      directory: path.join(tmpDir, 'storage'),
+      configstore: { get: vi.fn(), set: vi.fn(), delete: vi.fn() } as unknown as Configstore,
+    })
+    const upload = new Upload({
+      id: 'tenant/bucket/file.txt/v1',
+      size: 5,
+      offset: 0,
+      metadata: { cacheControl: 'max-age=60', contentType: 'text/plain' },
+    })
+
+    await store.create(upload)
+    await expect(store.write(Readable.from(Buffer.from('hello')), upload.id, 0)).resolves.toBe(5)
+    const sidecar = path.join(tmpDir, '~metadata', 'storage', 'tenant/bucket/file.txt/v1.json')
+    await expect(fsp.readFile(sidecar, 'utf-8')).resolves.toContain('"content-type":"text/plain"')
+
+    await store.remove(upload.id)
+    await expect(fsp.readdir(tmpDir)).resolves.not.toContain('~metadata')
+  })
+
+  it('removes the sidecar even when the blob is already gone', async () => {
+    const store = new FileStore({
+      directory: path.join(tmpDir, 'storage'),
+      configstore: { get: vi.fn(), set: vi.fn(), delete: vi.fn() } as unknown as Configstore,
+    })
+    const upload = new Upload({
+      id: 'tenant/bucket/file.txt/v2',
+      size: 5,
+      offset: 0,
+      metadata: { contentType: 'text/plain' },
+    })
+
+    await store.create(upload)
+    await fsp.unlink(path.join(tmpDir, 'storage', upload.id))
+
+    await expect(store.remove(upload.id)).rejects.toBe(TUS_ERRORS.FILE_NOT_FOUND)
+    await expect(fsp.readdir(tmpDir)).resolves.not.toContain('~metadata')
   })
 })

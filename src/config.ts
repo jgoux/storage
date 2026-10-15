@@ -91,6 +91,7 @@ type StorageConfigType = {
   uploadFileSizeLimitStandard?: number
   storageFilePath?: string
   storageFileEtagAlgorithm: 'mtime' | 'md5'
+  storageFileMetadata?: 'xattr' | 'sidecar'
   storageS3InternalTracesEnabled?: boolean
   storageS3MaxSockets: number
   storageS3RequestChecksumCalculation?: StorageS3ChecksumConfig
@@ -335,6 +336,14 @@ export function normalizeEnumValue<T extends string>(
   throw new Error(`Invalid ${label} "${value}". Expected one of: ${allowedValues.join(', ')}.`)
 }
 
+function getFileMetadataMode(value: string | undefined): 'xattr' | 'sidecar' | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  return normalizeEnumValue(value, ['xattr', 'sidecar'] as const, 'xattr', 'FILE_STORAGE_METADATA')
+}
+
 function getOptionalIfMultitenantConfigFromEnv(key: string, fallback?: string): string | undefined {
   return getOptionalConfigFromEnv('MULTI_TENANT', 'IS_MULTITENANT') === 'true'
     ? getOptionalConfigFromEnv(key, fallback)
@@ -503,6 +512,7 @@ export function getConfig(options?: { reload?: boolean }): StorageConfigType {
       'FILE_STORAGE_BACKEND_PATH'
     ),
     storageFileEtagAlgorithm: getOptionalConfigFromEnv('STORAGE_FILE_ETAG_ALGORITHM') || 'md5',
+    storageFileMetadata: getFileMetadataMode(getOptionalConfigFromEnv('FILE_STORAGE_METADATA')),
 
     // Storage - S3
     storageS3MaxSockets: parseInt(

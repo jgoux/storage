@@ -4,7 +4,6 @@ import * as fsp from 'node:fs/promises'
 import { ERRORS, ErrorCode, StorageBackendError } from '@internal/errors'
 import { ensureDir, ensureFile, pathExists, removePath } from '@internal/fs'
 import { createHash, randomUUID } from 'crypto'
-import * as xattr from 'fs-xattr'
 import path from 'path'
 import stream from 'stream'
 import { promisify } from 'util'
@@ -20,6 +19,13 @@ import {
   UploadPart,
   withOptionalVersion,
 } from './adapter'
+import {
+  FileMetadataKey,
+  FileMetadataMode,
+  FileMetadataStore,
+  FileMetadataValues,
+  resolveFileMetadataStore,
+} from './file-metadata'
 import { resolveSecureFilesystemPath } from './secure-path'
 
 const pipeline = promisify(stream.pipeline)
@@ -30,27 +36,6 @@ interface FileMetadata {
   contentType?: string
 }
 
-function isMissingXattrError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code
-  return code === 'ENODATA' || code === 'ENOATTR'
-}
-
-// file metadata attribute keys on different platforms
-const METADATA_ATTR_KEYS = {
-  darwin: {
-    'cache-control': 'com.apple.metadata.supabase.cache-control',
-    'content-encoding': 'com.apple.metadata.supabase.content-encoding',
-    'content-type': 'com.apple.metadata.supabase.content-type',
-    etag: 'com.apple.metadata.supabase.etag',
-  },
-  linux: {
-    'cache-control': 'user.supabase.cache-control',
-    'content-encoding': 'user.supabase.content-encoding',
-    'content-type': 'user.supabase.content-type',
-    etag: 'user.supabase.etag',
-  },
-}
-
 /**
  * FileBackend
  * Interacts with the file system with this FileBackend adapter
@@ -59,9 +44,11 @@ export class FileBackend implements StorageBackendAdapter {
   client = null
   filePath: string
   etagAlgorithm: 'mtime' | 'md5'
+  private metadataMode: FileMetadataMode | undefined
+  private metadataStore?: Promise<FileMetadataStore>
 
   constructor() {
-    const { storageFilePath, storageFileEtagAlgorithm } = getConfig()
+    const { storageFilePath, storageFileEtagAlgorithm, storageFileMetadata } = getConfig()
     if (!storageFilePath) {
       throw new Error('FILE_STORAGE_BACKEND_PATH env variable not set')
     }
@@ -69,6 +56,7 @@ export class FileBackend implements StorageBackendAdapter {
       ? storageFilePath
       : path.resolve(__dirname, '..', '..', '..', storageFilePath)
     this.etagAlgorithm = storageFileEtagAlgorithm
+    this.metadataMode = storageFileMetadata
   }
 
   async list(
@@ -204,6 +192,7 @@ export class FileBackend implements StorageBackendAdapter {
   ): Promise<ObjectMetadata> {
     try {
       const file = this.resolveSecurePath(withOptionalVersion(`${bucketName}/${key}`, version))
+      await this.ensureMetadataStore()
       await ensureFile(file)
       const destFile = fs.createWriteStream(file)
       await pipeline(body, destFile)
@@ -242,6 +231,7 @@ export class FileBackend implements StorageBackendAdapter {
     try {
       const file = this.resolveSecurePath(withOptionalVersion(`${bucket}/${key}`, version))
       await removePath(file)
+      await this.removeFileMetadata(file)
 
       // Clean up empty parent directories
       await this.cleanupEmptyDirectories(path.dirname(file))
@@ -357,7 +347,12 @@ export class FileBackend implements StorageBackendAdapter {
 
   private async deleteObjectPaths(bucket: string, keys: string[]) {
     const paths = keys.map((key) => this.resolveSecurePath(`${bucket}/${key}`))
-    const results = await Promise.allSettled(paths.map((filePath) => removePath(filePath)))
+    const results = await Promise.allSettled(
+      paths.map(async (filePath) => {
+        await removePath(filePath)
+        await this.removeFileMetadata(filePath)
+      })
+    )
 
     const parentDirs = new Set<string>()
     results.forEach((result, index) => {
@@ -461,8 +456,7 @@ export class FileBackend implements StorageBackendAdapter {
 
     const etag = await this.computeMd5(partPath)
 
-    const platform = process.platform === 'darwin' ? 'darwin' : 'linux'
-    await this.setMetadataAttr(partPath, METADATA_ATTR_KEYS[platform]['etag'], etag)
+    await this.setFileMetadataValues(partPath, { etag })
 
     return { ETag: etag }
   }
@@ -494,8 +488,7 @@ export class FileBackend implements StorageBackendAdapter {
       const partExists = await pathExists(partFilePath)
 
       if (partExists) {
-        const platform = process.platform === 'darwin' ? 'darwin' : 'linux'
-        const etag = await this.getMetadataAttr(partFilePath, METADATA_ATTR_KEYS[platform]['etag'])
+        const etag = await this.getMetadataValue(partFilePath, 'etag')
         if (etag && (part.ETag === etag || part.ETag === `"${etag}"`)) {
           return partFilePath
         }
@@ -535,9 +528,12 @@ export class FileBackend implements StorageBackendAdapter {
       metadata.contentEncoding
     )
 
-    removePath(this.resolveSecurePath(path.join('multiparts', uploadId))).catch(() => {
-      // no-op
-    })
+    const multiPartFolder = this.resolveSecurePath(path.join('multiparts', uploadId))
+    removePath(multiPartFolder)
+      .then(() => this.removeFileMetadata(multiPartFolder))
+      .catch(() => {
+        // no-op
+      })
 
     return {
       version,
@@ -556,6 +552,7 @@ export class FileBackend implements StorageBackendAdapter {
     const multiPartFolder = this.resolveSecurePath(path.join('multiparts', uploadId))
 
     await removePath(multiPartFolder)
+    await this.removeFileMetadata(multiPartFolder)
 
     // Clean up empty parent directories
     try {
@@ -588,8 +585,6 @@ export class FileBackend implements StorageBackendAdapter {
       `${storageS3Bucket}/${withOptionalVersion(sourceKey, sourceVersion)}`
     )
 
-    const platform = process.platform === 'darwin' ? 'darwin' : 'linux'
-
     const readStreamOptions = rangeBytes
       ? { start: rangeBytes.fromByte, end: rangeBytes.toByte }
       : {}
@@ -599,7 +594,7 @@ export class FileBackend implements StorageBackendAdapter {
     await pipeline(partStream, writePart)
 
     const etag = await this.computeMd5(partFilePath)
-    await this.setMetadataAttr(partFilePath, METADATA_ATTR_KEYS[platform]['etag'], etag)
+    await this.setFileMetadataValues(partFilePath, { etag })
 
     const fileStat = await fsp.lstat(partFilePath)
 
@@ -651,20 +646,18 @@ export class FileBackend implements StorageBackendAdapter {
     file: string,
     { contentType, cacheControl, contentEncoding }: FileMetadata
   ) {
-    const platform = process.platform === 'darwin' ? 'darwin' : 'linux'
-    await Promise.all([
-      this.setOrRemoveMetadataAttr(
-        file,
-        METADATA_ATTR_KEYS[platform]['cache-control'],
-        cacheControl
-      ),
-      this.setOrRemoveMetadataAttr(file, METADATA_ATTR_KEYS[platform]['content-type'], contentType),
-      this.setOrRemoveMetadataAttr(
-        file,
-        METADATA_ATTR_KEYS[platform]['content-encoding'],
-        contentEncoding
-      ),
-    ])
+    await this.setFileMetadataValues(file, {
+      'cache-control': cacheControl,
+      'content-type': contentType,
+      'content-encoding': contentEncoding,
+    })
+  }
+
+  /**
+   * Drops the metadata kept for a file, for callers that delete the file themselves
+   */
+  async removeFileMetadata(file: string) {
+    await (await this.getMetadataStore()).removeAll(file)
   }
 
   close() {
@@ -681,53 +674,45 @@ export class FileBackend implements StorageBackendAdapter {
   }
 
   protected async getStoredFileMetadata(file: string): Promise<FileMetadata> {
-    const platform = process.platform === 'darwin' ? 'darwin' : 'linux'
-    const [cacheControl, contentEncoding, contentType] = await Promise.all([
-      this.getMetadataAttr(file, METADATA_ATTR_KEYS[platform]['cache-control']),
-      this.getMetadataAttr(file, METADATA_ATTR_KEYS[platform]['content-encoding']),
-      this.getMetadataAttr(file, METADATA_ATTR_KEYS[platform]['content-type']),
+    const values = await (await this.getMetadataStore()).getMany(file, [
+      'cache-control',
+      'content-encoding',
+      'content-type',
     ])
 
-    return { cacheControl, contentEncoding, contentType }
-  }
-
-  protected async getMetadataAttr(file: string, attribute: string): Promise<string | undefined> {
-    try {
-      // fs-xattr's async path leaks about 0.5 kB per call (fs-xattr#47, reported
-      // for this backend in #1349). The sync path does not leak and the reads
-      // are small, so it is used until an upstream release ships the fix.
-      const value = xattr.getAttributeSync(file, attribute)
-      return value?.toString() ?? undefined
-    } catch (error) {
-      if (isMissingXattrError(error)) {
-        return undefined
-      }
-      throw error
+    return {
+      cacheControl: values['cache-control'],
+      contentEncoding: values['content-encoding'],
+      contentType: values['content-type'],
     }
   }
 
-  protected async setMetadataAttr(file: string, attribute: string, value: string): Promise<void> {
-    // see getMetadataAttr: sync xattr calls until fs-xattr ships a fixed release
-    xattr.setAttributeSync(file, attribute, value)
-  }
-
-  protected async setOrRemoveMetadataAttr(
-    file: string,
-    attribute: string,
-    value: string | undefined
-  ): Promise<void> {
-    if (value !== undefined) {
-      await this.setMetadataAttr(file, attribute, value)
-      return
-    }
-
-    try {
-      xattr.removeAttributeSync(file, attribute)
-    } catch (error) {
-      if (!isMissingXattrError(error)) {
+  private getMetadataStore(): Promise<FileMetadataStore> {
+    // resolved on first use so entry points that never touch metadata do not load an xattr addon
+    this.metadataStore ??= resolveFileMetadataStore(this.metadataMode, this.filePath).catch(
+      (error) => {
+        // do not keep a rejected promise, a later call retries
+        this.metadataStore = undefined
         throw error
       }
-    }
+    )
+    return this.metadataStore
+  }
+
+  /**
+   * Resolves the metadata store, so an unusable FILE_STORAGE_METADATA mode surfaces here
+   * (at startup, or before an upload writes any bytes) instead of in the middle of a request.
+   */
+  async ensureMetadataStore(): Promise<void> {
+    await this.getMetadataStore()
+  }
+
+  private async getMetadataValue(file: string, key: FileMetadataKey) {
+    return (await this.getMetadataStore()).get(file, key)
+  }
+
+  private async setFileMetadataValues(file: string, values: FileMetadataValues) {
+    await (await this.getMetadataStore()).set(file, values)
   }
 
   /**
