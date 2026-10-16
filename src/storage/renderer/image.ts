@@ -165,39 +165,45 @@ const IMGPROXY_PUBLIC_ERRORS = [
   },
 ] as const
 
-const dispatcher: Dispatcher = new Agent({
-  bodyTimeout: IMGPROXY_REQUEST_TIMEOUT_MS,
-  headersTimeout: IMGPROXY_REQUEST_TIMEOUT_MS,
-  keepAliveMaxTimeout: imgProxyHttpKeepAlive * 1000,
-  keepAliveTimeout: 2 * 1000,
-  ...(imgProxyHttpMaxSockets > 0 ? { connections: imgProxyHttpMaxSockets } : {}),
-}).compose(
-  interceptors.retry({
-    maxRetries: IMGPROXY_MAX_RETRIES,
-    maxTimeout: IMGPROXY_RETRY_MAX_TIMEOUT_MS,
-    methods: ['GET'],
-    minTimeout: IMGPROXY_RETRY_MIN_TIMEOUT_MS,
-    retryAfter: IMGPROXY_RETRY_AFTER_ENABLED,
-    throwOnError: false,
-    timeoutFactor: IMGPROXY_RETRY_TIMEOUT_FACTOR,
-    statusCodes: [408, 429, 500, 502, 503, 504],
-    errorCodes: [
-      'ECONNRESET',
-      'ECONNREFUSED',
-      'ETIMEDOUT',
-      'ENOTFOUND',
-      'ENETDOWN',
-      'ENETUNREACH',
-      'EHOSTDOWN',
-      'EHOSTUNREACH',
-      'EPIPE',
-      'UND_ERR_CONNECT_TIMEOUT',
-      'UND_ERR_SOCKET',
-      'UND_ERR_HEADERS_TIMEOUT',
-      'UND_ERR_BODY_TIMEOUT',
-    ],
-  })
-)
+let dispatcher: Dispatcher | undefined
+
+// Built on first use so that importing the renderer constructs nothing.
+function getDispatcher(): Dispatcher {
+  dispatcher ??= new Agent({
+    bodyTimeout: IMGPROXY_REQUEST_TIMEOUT_MS,
+    headersTimeout: IMGPROXY_REQUEST_TIMEOUT_MS,
+    keepAliveMaxTimeout: imgProxyHttpKeepAlive * 1000,
+    keepAliveTimeout: 2 * 1000,
+    ...(imgProxyHttpMaxSockets > 0 ? { connections: imgProxyHttpMaxSockets } : {}),
+  }).compose(
+    interceptors.retry({
+      maxRetries: IMGPROXY_MAX_RETRIES,
+      maxTimeout: IMGPROXY_RETRY_MAX_TIMEOUT_MS,
+      methods: ['GET'],
+      minTimeout: IMGPROXY_RETRY_MIN_TIMEOUT_MS,
+      retryAfter: IMGPROXY_RETRY_AFTER_ENABLED,
+      throwOnError: false,
+      timeoutFactor: IMGPROXY_RETRY_TIMEOUT_FACTOR,
+      statusCodes: [408, 429, 500, 502, 503, 504],
+      errorCodes: [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'ENETDOWN',
+        'ENETUNREACH',
+        'EHOSTDOWN',
+        'EHOSTUNREACH',
+        'EPIPE',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_SOCKET',
+        'UND_ERR_HEADERS_TIMEOUT',
+        'UND_ERR_BODY_TIMEOUT',
+      ],
+    })
+  )
+  return dispatcher
+}
 
 interface TransformLimits {
   maxResolution?: number | null
@@ -270,7 +276,7 @@ const client: ImageRendererClient = {
         method: 'GET',
         headers: createHeaders(options.headers),
         signal: fetchSignal,
-        dispatcher,
+        dispatcher: getDispatcher(),
       } as RequestInit & { dispatcher?: Dispatcher })
     } catch (e) {
       if (options.signal?.aborted) {
